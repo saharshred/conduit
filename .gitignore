@@ -1,0 +1,5 @@
+/data/
+*.json
+bin/
+*.test
+.DS_Store

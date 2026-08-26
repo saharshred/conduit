@@ -1,0 +1,9 @@
+FROM golang:1.24-alpine AS build
+WORKDIR /src
+COPY go.mod ./
+COPY . .
+RUN go build -o /out/normalizer ./cmd/normalizer
+
+FROM alpine:3.20
+COPY --from=build /out/normalizer /usr/local/bin/normalizer
+ENTRYPOINT ["/usr/local/bin/normalizer", "-bank-a=http://mockbanks:8081", "-bank-b=http://mockbanks:8082", "-bank-c=http://mockbanks:8083"]
