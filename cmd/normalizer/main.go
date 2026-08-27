@@ -1,10 +1,8 @@
 // Command normalizer fetches transaction history from all three mock banks
-// (see cmd/mockbanks), normalizes each into the unified schema, dedupes
-// (both within a bank's own pagination overlap and, via internal/ingest,
-// across any redelivery), and prints a summary.
-//
-// Day 3 wires this into RabbitMQ instead of stdout; Day 4 adds the fraud
-// scorer downstream of that queue.
+// (see cmd/mockbanks), normalizes each into the unified schema, dedupes the
+// pagination-overlap quirk within a bank (internal/normalize already does
+// this), and publishes every transaction to RabbitMQ (internal/queue) for
+// cmd/ingestor to pick up.
 package main
 
 import (
@@ -13,14 +11,17 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/saharshred/conduit/internal/ingest"
+	amqp "github.com/rabbitmq/amqp091-go"
+
 	"github.com/saharshred/conduit/internal/normalize"
+	"github.com/saharshred/conduit/internal/queue"
 )
 
 func main() {
 	bankA := flag.String("bank-a", "http://localhost:8081", "bank-a base URL")
 	bankB := flag.String("bank-b", "http://localhost:8082", "bank-b base URL")
 	bankC := flag.String("bank-c", "http://localhost:8083", "bank-c base URL")
+	amqpURL := flag.String("rabbitmq", "amqp://guest:guest@localhost:5673/", "RabbitMQ URL")
 	flag.Parse()
 
 	sources := []*normalize.Client{
@@ -29,10 +30,24 @@ func main() {
 		normalize.New("bank-c", *bankC, normalize.MapperBankC),
 	}
 
-	pipeline := ingest.New(ingest.NewMemStore())
 	ctx := context.Background()
 
-	var totalFetched, totalAccepted, totalDuplicate int
+	conn, err := amqp.Dial(*amqpURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer ch.Close()
+	if err := queue.Topology(ch); err != nil {
+		log.Fatal(err)
+	}
+	pub := queue.NewPublisher(ch)
+
+	var totalFetched, totalPublished int
 	for _, c := range sources {
 		txns, err := c.FetchAll(ctx)
 		if err != nil {
@@ -40,22 +55,14 @@ func main() {
 		}
 		totalFetched += len(txns)
 
-		var accepted, duplicate int
 		for _, txn := range txns {
-			ok, err := pipeline.Accept(ctx, txn)
-			if err != nil {
-				log.Fatalf("%s: ingest: %v", c.BankName, err)
+			if err := pub.Publish(ctx, txn); err != nil {
+				log.Fatalf("%s: publishing %s: %v", c.BankName, txn.IdempotencyKey(), err)
 			}
-			if ok {
-				accepted++
-			} else {
-				duplicate++
-			}
+			totalPublished++
 		}
-		totalAccepted += accepted
-		totalDuplicate += duplicate
-		fmt.Printf("%-8s fetched=%-6d accepted=%-6d duplicate=%d\n", c.BankName, len(txns), accepted, duplicate)
+		fmt.Printf("%-8s fetched=%-6d published=%d\n", c.BankName, len(txns), len(txns))
 	}
 
-	fmt.Printf("\ntotal: fetched=%d accepted=%d duplicate=%d\n", totalFetched, totalAccepted, totalDuplicate)
+	fmt.Printf("\ntotal: fetched=%d published=%d\n", totalFetched, totalPublished)
 }

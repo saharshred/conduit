@@ -3,3 +3,13 @@
 bin/
 *.test
 .DS_Store
+
+# Elixir
+services/scorer/_build/
+services/scorer/deps/
+services/scorer/.elixir_ls/
+erl_crash.dump
+
+# Python attack script venv
+attack/venv/
+attack/__pycache__/
