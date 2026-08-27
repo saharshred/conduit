@@ -1,0 +1,36 @@
+<%= link_to "← back", flagged_transactions_path, class: "text-sm text-slate-500 hover:underline" %>
+
+<h1 class="text-xl font-semibold tracking-tight mt-3 mb-6 font-mono"><%= @flagged_transaction.idempotency_key %></h1>
+
+<dl class="grid grid-cols-[8rem_1fr] gap-y-3 text-sm">
+  <dt class="text-slate-500">Status</dt>
+  <dd><%= @flagged_transaction.status %></dd>
+
+  <dt class="text-slate-500">Account</dt>
+  <dd class="font-mono"><%= @flagged_transaction.account_id %></dd>
+
+  <dt class="text-slate-500">Amount</dt>
+  <dd class="tabular-nums">$<%= "%.2f" % @flagged_transaction.amount_dollars %></dd>
+
+  <dt class="text-slate-500">Category</dt>
+  <dd><%= @flagged_transaction.merchant_category %></dd>
+
+  <dt class="text-slate-500">Occurred</dt>
+  <dd><%= @flagged_transaction.occurred_at %></dd>
+
+  <dt class="text-slate-500">Rules triggered</dt>
+  <dd>
+    <ul class="list-disc list-inside text-amber-400">
+      <% @flagged_transaction.reason_list.each do |reason| %>
+        <li><%= reason %></li>
+      <% end %>
+    </ul>
+  </dd>
+</dl>
+
+<% if @flagged_transaction.status == "pending" %>
+  <div class="mt-6 flex gap-3">
+    <%= button_to "Approve", approve_flagged_transaction_path(@flagged_transaction), class: "px-3 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 text-sm" %>
+    <%= button_to "Deny", deny_flagged_transaction_path(@flagged_transaction), class: "px-3 py-1.5 rounded bg-red-800 hover:bg-red-700 text-sm" %>
+  </div>
+<% end %>

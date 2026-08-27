@@ -7,7 +7,7 @@ defmodule Scorer.Transaction do
   """
 
   @enforce_keys [:idempotency_key, :account_id, :amount_cents, :merchant_category, :occurred_at]
-  defstruct [:idempotency_key, :account_id, :amount_cents, :merchant_category, :occurred_at, flags: []]
+  defstruct [:idempotency_key, :account_id, :amount_cents, :merchant_category, :occurred_at, :city, flags: []]
 
   @type t :: %__MODULE__{
           idempotency_key: String.t(),
@@ -15,6 +15,7 @@ defmodule Scorer.Transaction do
           amount_cents: integer(),
           merchant_category: String.t(),
           occurred_at: DateTime.t(),
+          city: String.t() | nil,
           flags: [String.t()]
         }
 end

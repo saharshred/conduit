@@ -2,10 +2,10 @@ defmodule Scorer.Runner do
   @moduledoc """
   Connects to the same Postgres database the Go ingestor writes into,
   loads every transaction, runs `Scorer.Rules` against it grouped by
-  account, and prints what got flagged. This is the batch-mode Day 4
-  milestone; wiring this to consume the RabbitMQ stream directly (instead
-  of reading what's already landed) is the natural next step once
-  services/dashboard exists to show the results live.
+  account, and upserts what got flagged into `flagged_transactions` — the
+  table services/dashboard (Rails) reads from. Batch mode for now; wiring
+  this to consume the RabbitMQ stream directly instead of reading what's
+  already landed is the natural next step.
   """
 
   alias Scorer.{Rules, Transaction}
@@ -19,17 +19,18 @@ defmodule Scorer.Runner do
     %Postgrex.Result{rows: rows} =
       Postgrex.query!(
         pid,
-        "SELECT idempotency_key, account_id, amount_cents, merchant_category, occurred_at FROM transactions ORDER BY occurred_at",
+        "SELECT idempotency_key, account_id, amount_cents, merchant_category, city, occurred_at FROM transactions ORDER BY occurred_at",
         []
       )
 
     transactions =
-      Enum.map(rows, fn [key, account, amount, category, occurred_at] ->
+      Enum.map(rows, fn [key, account, amount, category, city, occurred_at] ->
         %Transaction{
           idempotency_key: key,
           account_id: account,
           amount_cents: amount,
           merchant_category: category,
+          city: city,
           occurred_at: naive_to_utc(occurred_at)
         }
       end)
@@ -40,9 +41,29 @@ defmodule Scorer.Runner do
 
     Enum.each(flagged, fn txn ->
       IO.puts("FLAGGED #{txn.idempotency_key} (#{txn.account_id}): #{Enum.join(txn.flags, ", ")}")
+      upsert_flagged(pid, txn)
     end)
 
     {transactions, flagged}
+  end
+
+  # Upserts by idempotency_key — safe to re-run the scorer against the
+  # same data (e.g. on a schedule) without duplicating rows or clobbering
+  # a reviewer's approve/deny decision on a transaction that's already
+  # been looked at.
+  defp upsert_flagged(pid, txn) do
+    Postgrex.query!(
+      pid,
+      """
+      INSERT INTO flagged_transactions
+        (idempotency_key, account_id, amount_cents, merchant_category, reasons, occurred_at, status, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, 'pending', now(), now())
+      ON CONFLICT (idempotency_key) DO UPDATE
+        SET reasons = EXCLUDED.reasons, updated_at = now()
+      """,
+      [txn.idempotency_key, txn.account_id, txn.amount_cents, txn.merchant_category,
+       Enum.join(txn.flags, "\n"), DateTime.to_naive(txn.occurred_at)]
+    )
   end
 
   defp naive_to_utc(%NaiveDateTime{} = ndt), do: DateTime.from_naive!(ndt, "Etc/UTC")

@@ -36,6 +36,7 @@ def build_transaction(account_id: str, seq: int) -> dict:
         "currency": "USD",
         "merchant_name": "Unknown Merchant",
         "merchant_category": "7995",
+        "city": "New York",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 

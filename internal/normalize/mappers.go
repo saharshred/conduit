@@ -13,7 +13,7 @@ import (
 // aggregation APIs really do disagree on field names, amount units, and
 // timestamp formats like this.
 
-// MapperBankA: {tx_id, acct, amount (dollars, float), merchant, mcc, ts}
+// MapperBankA: {tx_id, acct, amount (dollars, float), merchant, mcc, city, ts}
 func MapperBankA(n banks.NativeTxn) (schema.Transaction, error) {
 	amountDollars, _ := n["amount"].(float64)
 	ts, err := parseTime(n["ts"])
@@ -28,11 +28,12 @@ func MapperBankA(n banks.NativeTxn) (schema.Transaction, error) {
 		Currency:         "USD",
 		MerchantName:     str(n["merchant"]),
 		MerchantCategory: str(n["mcc"]),
+		City:             str(n["city"]),
 		Timestamp:        ts,
 	}, nil
 }
 
-// MapperBankB: {id, account_number, amount_cents (int), desc, category_code, posted_at}
+// MapperBankB: {id, account_number, amount_cents (int), desc, category_code, city_name, posted_at}
 func MapperBankB(n banks.NativeTxn) (schema.Transaction, error) {
 	amountCents, _ := n["amount_cents"].(float64) // JSON numbers decode as float64
 	ts, err := parseTime(n["posted_at"])
@@ -47,11 +48,12 @@ func MapperBankB(n banks.NativeTxn) (schema.Transaction, error) {
 		Currency:         "USD",
 		MerchantName:     str(n["desc"]),
 		MerchantCategory: str(n["category_code"]),
+		City:             str(n["city_name"]),
 		Timestamp:        ts,
 	}, nil
 }
 
-// MapperBankC: {uuid, account, cents (int), payee, category, when}
+// MapperBankC: {uuid, account, cents (int), payee, category, loc, when}
 func MapperBankC(n banks.NativeTxn) (schema.Transaction, error) {
 	cents, _ := n["cents"].(float64)
 	ts, err := parseTime(n["when"])
@@ -66,6 +68,7 @@ func MapperBankC(n banks.NativeTxn) (schema.Transaction, error) {
 		Currency:         "USD",
 		MerchantName:     str(n["payee"]),
 		MerchantCategory: str(n["category"]),
+		City:             str(n["loc"]),
 		Timestamp:        ts,
 	}, nil
 }

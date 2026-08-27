@@ -5,19 +5,16 @@ defmodule Scorer.Rules do
   transactions through a set of cheap rule checks and has to decide in
   milliseconds, and this mirrors that shape.
 
-  Two rules are implemented for real:
+  Three rules:
 
     * velocity — too many transactions on one account in too short a window
     * mcc_drift — an account's spending suddenly hits a merchant category
       it has never used before
-
-  A third (geo-impossible: two transactions too far apart to both be
-  genuine given the time between them) needs a location field the
-  synthetic dataset generator doesn't produce yet — see the module doc in
-  ../README.md for what that would take.
+    * geo_impossible — two transactions too far apart to both be genuine
+      given the time between them (see `Scorer.Geo`)
   """
 
-  alias Scorer.Transaction
+  alias Scorer.{Geo, Transaction}
 
   @velocity_window_seconds 120
   @velocity_threshold 5
@@ -48,7 +45,7 @@ defmodule Scorer.Rules do
     |> Enum.with_index()
     |> Enum.map(fn {txn, idx} ->
       prior = Enum.take(sorted_txns, idx)
-      flags = velocity_flags(txn, prior) ++ mcc_drift_flags(txn, prior)
+      flags = velocity_flags(txn, prior) ++ mcc_drift_flags(txn, prior) ++ geo_flags(txn, prior)
       %{txn | flags: flags}
     end)
     |> Enum.filter(&(&1.flags != []))
@@ -82,6 +79,23 @@ defmodule Scorer.Rules do
 
       true ->
         ["mcc_drift: first time this account has used category #{txn.merchant_category}"]
+    end
+  end
+
+  # Only checked against the immediately preceding transaction — that's
+  # the one "too far, too fast" is actually about; comparing against every
+  # prior transaction would flag normal travel-over-days as impossible.
+  defp geo_flags(_txn, []), do: []
+
+  defp geo_flags(txn, prior) do
+    previous = List.last(prior)
+
+    with true <- is_binary(txn.city) and is_binary(previous.city),
+         {:impossible, kmh} <- Geo.impossible_travel(previous.city, previous.occurred_at, txn.city, txn.occurred_at) do
+      speed = if kmh == :infinity, do: "instantaneously", else: "#{round(kmh)} km/h"
+      ["geo_impossible: #{previous.city} -> #{txn.city} implies traveling #{speed}"]
+    else
+      _ -> []
     end
   end
 end

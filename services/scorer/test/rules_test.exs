@@ -125,4 +125,43 @@ defmodule Scorer.RulesTest do
     assert both_flagged != nil
     assert length(both_flagged.flags) == 2
   end
+
+  test "a transaction in Tokyo minutes after one in Chicago trips geo_impossible" do
+    txns = [
+      txn(%{idempotency_key: "k0", city: "Chicago", occurred_at: ~U[2026-01-01 09:00:00Z]}),
+      txn(%{idempotency_key: "k1", city: "Tokyo", occurred_at: ~U[2026-01-01 09:04:00Z]})
+    ]
+
+    flagged = Rules.score(txns)
+
+    assert [flagged_txn] = flagged
+    assert flagged_txn.idempotency_key == "k1"
+    assert Enum.any?(flagged_txn.flags, &String.starts_with?(&1, "geo_impossible:"))
+  end
+
+  test "the same account's normal same-city spending never trips geo_impossible" do
+    txns =
+      for i <- 0..3 do
+        txn(%{
+          idempotency_key: "k#{i}",
+          city: "Chicago",
+          occurred_at: DateTime.add(~U[2026-01-01 09:00:00Z], i * 3600, :second)
+        })
+      end
+
+    assert Rules.score(txns) == []
+  end
+
+  test "geo_impossible is only checked against the immediately preceding transaction" do
+    # Chicago -> Tokyo -> Chicago, each several hours apart (all plausible
+    # individually), should not somehow get flagged by comparing against
+    # an even-earlier, farther-back transaction.
+    txns = [
+      txn(%{idempotency_key: "k0", city: "Chicago", occurred_at: ~U[2026-01-01 00:00:00Z]}),
+      txn(%{idempotency_key: "k1", city: "Tokyo", occurred_at: ~U[2026-01-02 00:00:00Z]}),
+      txn(%{idempotency_key: "k2", city: "Chicago", occurred_at: ~U[2026-01-03 00:00:00Z]})
+    ]
+
+    assert Rules.score(txns) == []
+  end
 end

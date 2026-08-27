@@ -57,11 +57,11 @@ func (s *Store) SeenAndMark(ctx context.Context, key string) (bool, error) {
 func (s *Store) Insert(ctx context.Context, txn schema.Transaction) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO transactions
-			(idempotency_key, bank, native_id, account_id, amount_cents, currency, merchant_name, merchant_category, occurred_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			(idempotency_key, bank, native_id, account_id, amount_cents, currency, merchant_name, merchant_category, city, occurred_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (idempotency_key) DO NOTHING
 	`, txn.IdempotencyKey(), txn.Bank, txn.NativeID, txn.AccountID, txn.AmountCents,
-		txn.Currency, txn.MerchantName, txn.MerchantCategory, txn.Timestamp)
+		txn.Currency, txn.MerchantName, txn.MerchantCategory, txn.City, txn.Timestamp)
 	if err != nil {
 		return fmt.Errorf("pgingest: inserting transaction: %w", err)
 	}

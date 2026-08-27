@@ -8,13 +8,13 @@ to beat with your own adversarial traffic generator.
 
 Signals for: **Plaid** (Go, multi-source normalization is literally their
 product problem) and **Ramp** (Elixir fraud scoring, RabbitMQ retry
-pattern) directly; **Ruby/Rails** for Coinbase and Stripe (see the Rails
-status note below — it's the one piece not done, for a real reason).
+pattern) directly; **Ruby/Rails** for Coinbase and Stripe.
 
 ## Status
 
-Days 1-6 substantially done and verified against real infrastructure
-(Docker Postgres, RabbitMQ — not mocks) and a real Elixir scorer.
+All of Days 1-6 done and verified against real infrastructure (Docker
+Postgres, RabbitMQ — not mocks), a real Elixir scorer, and a real Rails
+app.
 
 - [x] Unified schema + idempotency keys (`internal/schema`)
 - [x] Three mock bank APIs, each with a dominant quirk — flaky auth, rate
@@ -33,24 +33,27 @@ Days 1-6 substantially done and verified against real infrastructure
 - [x] `cmd/ingestor` deliberately injects both a transient (~8%, self-heals
       via retry) and a permanent ("poison") failure mode, so the
       retry/dead-letter path is provably exercised, not theoretical
-- [x] **Real Elixir fraud scorer** (`services/scorer`) — velocity and
-      MCC-drift rules, 8 passing ExUnit tests, actually connects to
-      Postgres via Postgrex and scores real ingested transactions
+- [x] **Real Elixir fraud scorer** (`services/scorer`) — velocity,
+      mcc_drift, and geo_impossible rules, 16 passing ExUnit tests,
+      actually connects to Postgres via Postgrex, scores real ingested
+      transactions, and upserts flagged ones for the dashboard to read
 - [x] **Real adversarial attack script** (`attack/attack.py`) — publishes
       a burst of transactions straight onto the live RabbitMQ exchange;
       the scorer catches it (see the real transcript below)
-- [ ] Rails admin dashboard (`services/dashboard`) — **not built**. The
-      system Ruby here is 2.6.10; installing Rails ~>6.1 (the newest
-      version that still supports Ruby 2.6) failed because its own
-      dependency `zeitwerk` has dropped support for anything below Ruby
-      3.2, so the resolver pulls a `zeitwerk` version that then refuses
-      to install. Fixing this for real means installing a modern Ruby via
-      `rbenv`/`asdf` first — a reasonable next step, just not one I did
-      silently mid-session. `services/dashboard/README.md` has the exact
-      commands.
-- [ ] Geo-impossible-travel rule — needs a location field the dataset
-      generator doesn't produce yet; noted as a gap in `services/scorer`'s
-      module docs rather than faked.
+- [x] **Real Rails 8 admin dashboard** (`services/dashboard`) — reads
+      `flagged_transactions` directly out of the same `conduit` Postgres
+      database the scorer writes into; approve/deny actions actually
+      persist. Getting here needed a newer Ruby than what ships on this
+      machine (system Ruby 2.6.10 can't install a modern Rails —
+      `zeitwerk` requires >=3.2); installed 3.2.4 via `rbenv` mid-session,
+      documented in `services/dashboard/README.md`. No automated test
+      suite yet — verified live against a real filled database instead
+      (see the transcript in that README)
+- [x] Geo-impossible-travel rule — added. Every mock bank transaction now
+      carries a `city`; the rule flags two transactions on one account
+      that are farther apart than physically possible to travel between
+      in the elapsed time, using haversine distance over a small fixed
+      city table (`services/scorer/lib/scorer/geo.ex`)
 
 ## Why it's built this way
 
@@ -94,6 +97,26 @@ correctly not flagged (not enough evidence yet), and every one after that
 is. That's the actual false-negative/true-positive boundary you'd want to
 be able to explain in an interview, not a number picked to look clean.
 
+**A real bug the geo rule's own numbers caught.** First version of the
+dataset generator rolled a random "away city" independently per
+*transaction*, in each bank's own generation loop. Since bank-a, bank-b,
+and bank-c are three independent passes describing the *same* underlying
+person, that meant the merged, chronologically-sorted view of one
+account's transactions could show it in Chicago for a bank-a transaction
+and Tokyo for a bank-b transaction four minutes later — not because
+anything fraudulent happened, but because the three RNG streams simply
+disagreed with each other. Result: `geo_impossible` fired on 684 of 741
+flags (92%) — obviously wrong for a rule that's supposed to be rare and
+meaningful. Fixed by keying the "where is this account today" decision off
+`(account, day)` with a local deterministic seed (`dayCity` in
+`scripts/gen-dataset/main.go`) instead of the shared RNG stream, so all
+three banks agree on the account's location for a given day. Re-run:
+99 flagged out of 10,080 (37 geo, 62 mcc_drift) — a believable signal
+instead of noise. Worth knowing this happened, because it's the same
+class of problem a real aggregator hits: multiple sources describing one
+person can manufacture apparent anomalies purely from disagreeing with
+each other, independent of anything the person actually did.
+
 ## Running it yourself
 
 ```sh
@@ -120,10 +143,14 @@ go build -o bin/ingestor ./cmd/ingestor
 cd services/scorer && mix deps.get && mix test
 mix run -e 'Scorer.Runner.run(dsn: "postgres://conduit:conduit@localhost:5434/conduit")'
 
+# dashboard — reads flagged_transactions from the same conduit database
+cd ../dashboard && bin/rails db:migrate && bin/rails server -p 3001
+# http://localhost:3001
+
 # attack it
 cd ../../attack && python3 -m venv venv && ./venv/bin/pip install pika
 ./venv/bin/python attack.py --account acct-attack-1 --count 20
-# then re-run the scorer above and watch the burst light up
+# re-run the scorer, then refresh the dashboard (or wait 5s — it polls)
 ```
 
 Unit tests (no infra required):
@@ -151,10 +178,10 @@ Mock Bank C (odd pagination) --/    (unified schema, idempotency keys)
                                     Postgres
                                          |
                                          v
-                          Elixir Scorer (velocity / MCC-drift rules)
+                          Elixir Scorer (velocity / mcc_drift / geo_impossible)
                                          |
                                          v
-                          Rails Admin Dashboard (not yet built — see Status)
+                          Rails Admin Dashboard (approve/deny, 5s poll)
 
 Adversarial Attack Script (attack/attack.py)
         -.publishes directly to RabbitMQ.-> same pipeline as real banks

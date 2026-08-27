@@ -21,6 +21,7 @@ type Transaction struct {
 	Currency         string          `json:"currency"`
 	MerchantName     string          `json:"merchant_name"`
 	MerchantCategory string          `json:"merchant_category"` // MCC-style code
+	City             string          `json:"city"`              // where the transaction occurred — feeds the scorer's geo_impossible rule
 	Timestamp        time.Time       `json:"timestamp"`
 	Raw              json.RawMessage `json:"raw,omitempty"` // original payload, kept for audit
 }
