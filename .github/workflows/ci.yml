@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: conduit
+          POSTGRES_USER: conduit
+          POSTGRES_PASSWORD: conduit
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U conduit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Unit tests (no infra required)
+        run: go test ./internal/ingest/... ./internal/normalize/... -v
+
+      - name: Race detector
+        run: go test -race ./internal/ingest/... ./internal/normalize/...
+
+      - name: Apply schema
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y postgresql-client
+          psql postgres://conduit:conduit@localhost:5434/conduit?sslmode=disable -f migrations/0001_ingest.sql
+          psql postgres://conduit:conduit@localhost:5434/conduit?sslmode=disable -f migrations/0002_add_city.sql
+
+      - name: Postgres integration tests
+        env:
+          CONDUIT_TEST_DSN: postgres://conduit:conduit@localhost:5434/conduit?sslmode=disable
+        run: go test ./internal/pgingest/... -v
+
+      - name: Build every binary
+        run: |
+          go build -o /dev/null ./cmd/mockbanks
+          go build -o /dev/null ./cmd/normalizer
+          go build -o /dev/null ./cmd/ingestor
+          go build -o /dev/null ./scripts/gen-dataset
+
+  elixir:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/scorer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          elixir-version: "1.17"
+
+      - run: mix deps.get
+      - run: mix test
+
+  compose-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: docker compose up and check transactions actually landed
+        run: |
+          docker compose up --build -d
+          echo "waiting for the normalizer to feed everything through..."
+          timeout 180 bash -c 'until [ "$(docker compose exec -T postgres psql -U conduit -d conduit -tAc "SELECT count(*) FROM transactions")" -gt "5000" ]; do sleep 5; done'
+          docker compose exec -T postgres psql -U conduit -d conduit -c "SELECT count(*), count(city) FROM transactions;"
+          docker compose down -v

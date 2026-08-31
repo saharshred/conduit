@@ -1,7 +1,17 @@
-version: "3.9"
 
-# Day 5 target. rabbitmq's management UI is exposed for watching the
-# retry/dead-letter queues fill up live during the Day 6 attack demo.
+# One command for the Go half of the pipeline: `docker compose up --build`.
+# Brings up Postgres/RabbitMQ, migrates the schema, generates a mock
+# 6-week dataset, starts the three mock banks + the ingestor (which
+# deliberately fails ~8% of deliveries to exercise the retry/dead-letter
+# path — see internal/queue), then runs the normalizer to feed everything
+# in. Watch queue depths at http://localhost:15673 (guest/guest).
+#
+# services/scorer (Elixir) and services/dashboard (Rails) are run
+# separately — see their own READMEs. Containerizing two more language
+# runtimes with native-dependency bundlers (pg gem, etc.) for services
+# that are meant to be run once against already-durable Postgres data
+# wasn't worth the added fragility; `mix run` / `rails server` against
+# this compose stack's exposed Postgres port is one command each.
 services:
   postgres:
     image: postgres:16-alpine
@@ -10,32 +20,89 @@ services:
       POSTGRES_USER: conduit
       POSTGRES_PASSWORD: conduit
     ports:
-      - "5432:5432"
+      - "5434:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U conduit"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     ports:
-      - "5672:5672"
-      - "15672:15672" # management UI
+      - "5673:5672"
+      - "15673:15672" # management UI
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # One-shot: applies both migrations, then exits.
+  migrate:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./migrations:/migrations:ro
+    entrypoint:
+      - sh
+      - -c
+      - "psql postgres://conduit:conduit@postgres:5432/conduit?sslmode=disable -f /migrations/0001_ingest.sql -f /migrations/0002_add_city.sql"
+
+  # One-shot: writes a 6-week synthetic dataset per mock bank, then exits.
+  gen-dataset:
+    build: { context: ., dockerfile: Dockerfile }
+    entrypoint: ["/usr/local/bin/gen-dataset"]
+    command: ["-weeks", "6", "-per-day", "80", "-out", "/data/"]
+    volumes:
+      - dataset:/data
 
   mockbanks:
-    build:
-      context: .
-      dockerfile: Dockerfile.mockbanks
+    build: { context: ., dockerfile: Dockerfile }
+    entrypoint: ["/usr/local/bin/mockbanks", "/data/"]
+    volumes:
+      - dataset:/data
     ports:
       - "8081:8081"
       - "8082:8082"
       - "8083:8083"
-
-  normalizer:
-    build:
-      context: .
-      dockerfile: Dockerfile.normalizer
     depends_on:
-      - mockbanks
-      - rabbitmq
+      gen-dataset:
+        condition: service_completed_successfully
+
+  ingestor:
+    build: { context: ., dockerfile: Dockerfile }
+    entrypoint: ["/usr/local/bin/ingestor"]
+    command:
+      - -rabbitmq=amqp://guest:guest@rabbitmq:5672/
+      - -postgres=postgres://conduit:conduit@postgres:5432/conduit?sslmode=disable
+      - -inject-failures=true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  # One-shot: fetches everything from the three mock banks and publishes
+  # it to RabbitMQ, then exits.
+  normalizer:
+    build: { context: ., dockerfile: Dockerfile }
+    entrypoint: ["/usr/local/bin/normalizer"]
+    command:
+      - -bank-a=http://mockbanks:8081
+      - -bank-b=http://mockbanks:8082
+      - -bank-c=http://mockbanks:8083
+      - -rabbitmq=amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      mockbanks:
+        condition: service_started
+      ingestor:
+        condition: service_started
 
 volumes:
   pgdata:
+  dataset:

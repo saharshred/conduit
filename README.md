@@ -54,6 +54,13 @@ app.
       that are farther apart than physically possible to travel between
       in the elapsed time, using haversine distance over a small fixed
       city table (`services/scorer/lib/scorer/geo.ex`)
+- [x] **`docker compose up --build` actually works** for the whole Go
+      pipeline — Postgres, RabbitMQ, migrations, dataset generation,
+      mock banks, ingestor, normalizer, all in one command. Verified
+      locally and in CI, not just written and hoped for.
+- [x] **CI** (`.github/workflows/ci.yml`) — separate Go and Elixir jobs
+      (go vet, unit tests, race detector, Postgres integration tests,
+      `mix test`), plus a full compose smoke test, all on every push
 
 ## Why it's built this way
 
@@ -119,31 +126,27 @@ each other, independent of anything the person actually did.
 
 ## Running it yourself
 
+**One command** for the whole Go pipeline — Postgres, RabbitMQ, schema
+migration, mock bank dataset generation, the three mock banks, the
+ingestor (retry/dead-letter active), and the normalizer feeding
+everything through:
+
 ```sh
-# infra
-docker run -d --name conduit-pg -e POSTGRES_DB=conduit -e POSTGRES_USER=conduit \
-  -e POSTGRES_PASSWORD=conduit -p 5434:5432 postgres:16-alpine
-docker run -d --name conduit-rabbit -p 5673:5672 -p 15673:15672 rabbitmq:3.13-management-alpine
+docker compose up --build
+# watch queue depths at http://localhost:15673 (guest/guest)
+```
 
-# schema
-docker exec -i conduit-pg psql -U conduit -d conduit < migrations/0001_ingest.sql
+This is verified working, start to finish, not just written — see CI.
+`services/scorer` and `services/dashboard` run separately (different
+language runtimes — see below) against this stack's exposed Postgres.
 
-# generate mock bank data + build
-go run ./scripts/gen-dataset -weeks 6 -per-day 50 -out data/
-go build -o bin/mockbanks ./cmd/mockbanks
-go build -o bin/normalizer ./cmd/normalizer
-go build -o bin/ingestor ./cmd/ingestor
-
-# run the pipeline
-./bin/mockbanks data/ &
-./bin/ingestor -inject-failures=true &     # demonstrates retry + dead-letter
-./bin/normalizer -rabbitmq "amqp://guest:guest@localhost:5673/"
-
-# score what landed
+```sh
+# score what landed (needs Elixir/mix — services/scorer/README.md)
 cd services/scorer && mix deps.get && mix test
 mix run -e 'Scorer.Runner.run(dsn: "postgres://conduit:conduit@localhost:5434/conduit")'
 
 # dashboard — reads flagged_transactions from the same conduit database
+# (needs Ruby 3.2+/Rails — services/dashboard/README.md)
 cd ../dashboard && bin/rails db:migrate && bin/rails server -p 3001
 # http://localhost:3001
 
@@ -153,9 +156,13 @@ cd ../../attack && python3 -m venv venv && ./venv/bin/pip install pika
 # re-run the scorer, then refresh the dashboard (or wait 5s — it polls)
 ```
 
+For local Go dev without rebuilding a container on every change, swap
+`docker compose up --build` for `docker compose up postgres rabbitmq -d`
+and run the Go binaries directly — see `cmd/*/main.go` flags.
+
 Unit tests (no infra required):
 `go test ./internal/ingest/... ./internal/normalize/...`
-Integration tests (needs the Postgres container above):
+Integration tests (needs Postgres — `docker compose up postgres -d`):
 `CONDUIT_TEST_DSN="postgres://conduit:conduit@localhost:5434/conduit?sslmode=disable" go test ./internal/pgingest/... -v`
 
 ## Architecture
