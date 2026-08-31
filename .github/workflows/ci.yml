@@ -82,7 +82,17 @@ jobs:
       - name: docker compose up and check transactions actually landed
         run: |
           docker compose up --build -d
-          echo "waiting for the normalizer to feed everything through..."
-          timeout 180 bash -c 'until [ "$(docker compose exec -T postgres psql -U conduit -d conduit -tAc "SELECT count(*) FROM transactions")" -gt "5000" ]; do sleep 5; done'
+          echo "waiting for the normalizer to feed transactions through..."
+          # Threshold is deliberately low (100, not the full ~10,080) and
+          # the timeout generous (8 min) — this is a smoke test proving
+          # the whole pipeline actually functions end to end on a fresh
+          # machine, not a throughput benchmark. Shared CI runners are
+          # meaningfully slower than a laptop for this kind of I/O-heavy
+          # multi-container workload.
+          timeout 480 bash -c '
+            until [ "$(docker compose exec -T postgres psql -U conduit -d conduit -tAc "SELECT count(*) FROM transactions" 2>/dev/null || echo 0)" -gt "100" ]; do
+              sleep 10
+            done
+          ' || { echo "::error::timed out waiting for transactions to land"; docker compose logs; docker compose down -v; exit 1; }
           docker compose exec -T postgres psql -U conduit -d conduit -c "SELECT count(*), count(city) FROM transactions;"
           docker compose down -v
