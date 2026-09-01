@@ -124,6 +124,21 @@ class of problem a real aggregator hits: multiple sources describing one
 person can manufacture apparent anomalies purely from disagreeing with
 each other, independent of anything the person actually did.
 
+**A real bug CI caught that local testing never would have.** Getting the
+compose smoke test green in CI took two more pushes after it worked
+locally. First failure looked like slowness (raised a timeout — wrong
+fix, treated a symptom). Second failure showed the real error: `dial tcp
+...5672: connection refused`, 150ms after `docker compose` reported
+RabbitMQ *healthy*. `rabbitmq-diagnostics ping` can succeed — the Erlang
+node is up — a moment before the AMQP listener on 5672 is actually
+accepting connections; on a laptop that gap is usually too small to hit,
+on a loaded shared CI runner it isn't. `cmd/ingestor` and `cmd/normalizer`
+each dialed RabbitMQ exactly once and `log.Fatal`'d on any error, no
+restart policy, so the container just died. Fixed with
+`queue.DialWithRetry` (10 attempts, linear backoff) — the same "survive
+the failure mode that's actually going to happen" instinct the rest of
+this project is built on, just applied to itself.
+
 ## Running it yourself
 
 **One command** for the whole Go pipeline — Postgres, RabbitMQ, schema
