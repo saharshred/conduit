@@ -16,6 +16,31 @@ import (
 	"github.com/saharshred/conduit/internal/schema"
 )
 
+// DialWithRetry connects to RabbitMQ, retrying with backoff instead of
+// failing on the first attempt. This matters even with a compose
+// healthcheck in front of RabbitMQ: `rabbitmq-diagnostics ping` can
+// report healthy a moment before the AMQP listener on 5672 is actually
+// accepting connections (the Erlang node is up before the connection
+// handler is fully registered) — a real race that killed cmd/ingestor
+// outright in CI (connection refused, log.Fatal, container just dies,
+// no restart policy). A handful of retries with backoff is the fix, the
+// same pattern this project already uses for the mock banks' 429s and
+// RabbitMQ's own dead-letter retries.
+func DialWithRetry(url string, maxAttempts int) (*amqp.Connection, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		conn, err := amqp.Dial(url)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		if attempt < maxAttempts {
+			time.Sleep(time.Duration(attempt) * time.Second) // 1s, 2s, 3s, ...
+		}
+	}
+	return nil, fmt.Errorf("queue: dialing rabbitmq after %d attempts: %w", maxAttempts, lastErr)
+}
+
 const (
 	ExchangeName  = "conduit"
 	MainQueue     = "conduit.transactions"

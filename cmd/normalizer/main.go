@@ -11,8 +11,6 @@ import (
 	"fmt"
 	"log"
 
-	amqp "github.com/rabbitmq/amqp091-go"
-
 	"github.com/saharshred/conduit/internal/normalize"
 	"github.com/saharshred/conduit/internal/queue"
 )
@@ -32,7 +30,7 @@ func main() {
 
 	ctx := context.Background()
 
-	conn, err := amqp.Dial(*amqpURL)
+	conn, err := queue.DialWithRetry(*amqpURL, 10)
 	if err != nil {
 		log.Fatal(err)
 	}

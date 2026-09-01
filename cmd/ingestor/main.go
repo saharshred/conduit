@@ -22,8 +22,6 @@ import (
 	"strings"
 	"syscall"
 
-	amqp "github.com/rabbitmq/amqp091-go"
-
 	"github.com/saharshred/conduit/internal/ingest"
 	"github.com/saharshred/conduit/internal/pgingest"
 	"github.com/saharshred/conduit/internal/queue"
@@ -46,7 +44,7 @@ func main() {
 	defer store.Close()
 	pipeline := ingest.New(store)
 
-	conn, err := amqp.Dial(*amqpURL)
+	conn, err := queue.DialWithRetry(*amqpURL, 10)
 	if err != nil {
 		log.Fatal(err)
 	}
