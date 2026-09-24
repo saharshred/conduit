@@ -5,11 +5,13 @@ live, in one command.
 
 Multiple mock "bank" APIs, each with a different failure personality,
 normalized into one schema — feeding a real-time fraud scorer, showing up
-on a live dashboard, that you then try to beat with your own adversarial
-attack script. `docker compose up --build` brings up the entire system:
-Postgres, RabbitMQ, three mock banks, the ingestor, the normalizer, a
-continuously-polling Elixir scorer, and the Rails dashboard. No manual
-steps, no "now separately start the Elixir thing."
+**instantly** on a live dashboard (Postgres `LISTEN/NOTIFY` → Turbo
+Streams, not polling), that you then try to beat with your own
+adversarial attack script and get a real precision/recall number back,
+not just a flag count. `docker compose up --build` brings up the entire
+system: Postgres, RabbitMQ, three mock banks, the ingestor, the
+normalizer, a continuously-running Elixir scorer, and the Rails
+dashboard. No manual steps, no "now separately start the Elixir thing."
 
 ![Live demo: an attack lands, the flagged count jumps, the new transactions show up at the top](docs/demo.gif)
 
@@ -17,6 +19,12 @@ steps, no "now separately start the Elixir thing."
 15-transaction burst, and within one scorer poll cycle the dashboard's
 pending count goes from 115 → 126 with no manual refresh, no re-running
 anything by hand.)*
+
+![The metrics bar after a real attack: 70.4% recall, 10.7% precision, 1.57% false-positive rate on legitimate traffic — computed live, not hand-typed](docs/live-metrics.jpg)
+
+*(Same attack, now pushed to the dashboard the instant it's flagged — no
+polling delay — with a real precision/recall breakdown against the
+attack script's own ground-truth labels.)*
 
 Signals for: **Plaid** (Go, multi-source normalization is literally their
 product problem) and **Ramp** (Elixir fraud scoring, RabbitMQ retry
@@ -55,18 +63,18 @@ app.
 - [x] **Real Rails 8 admin dashboard** (`services/dashboard`) — reads
       `flagged_transactions` directly out of the same `conduit` Postgres
       database the scorer writes into; approve/deny actions actually
-      persist. No automated test suite yet — verified live against a
-      real filled database instead (see `services/dashboard/README.md`)
+      persist. 8 passing tests (see below), also verified live against a
+      real filled database (see `services/dashboard/README.md`)
 - [x] **Everything containerized, one command.** `services/scorer` now
-      runs as a long-lived polling loop (`Scorer.Runner.loop/1`, every
-      5s — matched to the dashboard's own poll interval) instead of a
-      one-shot script you had to remember to re-run, and both it and the
-      dashboard have their own Dockerfiles wired into the root
-      `docker-compose.yml`. `docker compose run --rm attack` runs the
-      Python attack script the same way, no local venv needed. The whole
-      loop — attack lands, scorer picks it up on its next poll, dashboard
-      reflects it on its next refresh — needs zero manual intervention,
-      proven by the GIF above.
+      runs as a long-lived loop (`Scorer.Runner.loop/1`, re-scoring every
+      5s) instead of a one-shot script you had to remember to re-run, and
+      both it and the dashboard have their own Dockerfiles wired into the
+      root `docker-compose.yml`. `docker compose run --rm attack` runs
+      the Python attack script the same way, no local venv needed. The
+      whole loop — attack lands, scorer picks it up on its next poll,
+      dashboard updates itself instantly via the push described below —
+      needs zero manual intervention, proven by the GIF and screenshot
+      above.
 - [x] Geo-impossible-travel rule — added. Every mock bank transaction now
       carries a `city`; the rule flags two transactions on one account
       that are farther apart than physically possible to travel between
@@ -76,9 +84,29 @@ app.
       pipeline — Postgres, RabbitMQ, migrations, dataset generation,
       mock banks, ingestor, normalizer, all in one command. Verified
       locally and in CI, not just written and hoped for.
-- [x] **CI** (`.github/workflows/ci.yml`) — separate Go and Elixir jobs
-      (go vet, unit tests, race detector, Postgres integration tests,
-      `mix test`), plus a full compose smoke test, all on every push
+- [x] **CI** (`.github/workflows/ci.yml`) — separate Go, Elixir, and Rails
+      jobs (go vet, unit tests, race detector, Postgres integration
+      tests, `mix test`, `bin/rails test`), plus a full compose smoke
+      test that now checks the scorer and dashboard too, all on every push
+- [x] **Real precision/recall, not a raw flag count.**
+      `services/scorer/lib/scorer/evaluate.ex` and the Rails
+      `DashboardMetrics` model both compute it independently, off the
+      same free ground-truth label `attack/attack.py` already provides
+      (every attack transaction is tagged `bank: "attack-sim"`) — 5
+      passing Elixir tests plus 2 Rails tests on the arithmetic itself,
+      including the "what if nothing's flagged yet" divide-by-zero cases
+- [x] **Real-time push, not polling.** The Elixir scorer `NOTIFY`s
+      Postgres the moment it flags something genuinely new (not every
+      poll — only on an actual fresh insert, via Postgres's `xmax = 0`
+      trick); a Rails background thread `LISTEN`s on the same channel and
+      broadcasts a fresh render over Turbo Streams. An attack shows up on
+      the dashboard instantly, no 5-second wait, verified by watching the
+      page update itself with zero manual refresh (see the screenshot above)
+- [x] **A real Rails test suite** (`services/dashboard/test/`) — 8
+      passing tests: index rendering, status filtering, an unrecognized
+      status param falling back safely, approve/deny actually persisting,
+      and the metrics arithmetic against seeded ground-truth data. Closes
+      the one gap this README used to call out explicitly.
 
 ## Why it's built this way
 
@@ -229,6 +257,10 @@ Unit tests (no infra required):
 `go test ./internal/ingest/... ./internal/normalize/...`
 Integration tests (needs Postgres — `docker compose up postgres -d`):
 `CONDUIT_TEST_DSN="postgres://conduit:conduit@localhost:5434/conduit?sslmode=disable" go test ./internal/pgingest/... -v`
+Elixir: `cd services/scorer && mix test` (21 tests, no infra required —
+`evaluate_test.exs` tests the precision/recall arithmetic as pure functions)
+Rails (needs Postgres — `docker compose up postgres -d`):
+`cd services/dashboard && RAILS_ENV=test bin/rails db:test:prepare && bin/rails test`
 
 ## Architecture
 
@@ -253,7 +285,7 @@ Mock Bank C (odd pagination) --/    (unified schema, idempotency keys)
               Elixir Scorer (velocity/mcc_drift/geo_impossible, polls every 5s)
                                          |
                                          v
-              Rails Dashboard (approve/deny, polls every 5s — localhost:3001)
+              Rails Dashboard (approve/deny, live via LISTEN/NOTIFY — localhost:3001)
 
 Adversarial Attack Script (docker compose run --rm attack)
         -.publishes directly to RabbitMQ.-> same pipeline as real banks

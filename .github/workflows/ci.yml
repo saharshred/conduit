@@ -74,6 +74,54 @@ jobs:
       - run: mix deps.get
       - run: mix test
 
+  rails:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/dashboard
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: conduit
+          POSTGRES_USER: conduit
+          POSTGRES_PASSWORD: conduit
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U conduit"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      CONDUIT_DB_HOST: localhost
+      CONDUIT_DB_PORT: "5434"
+      CONDUIT_DB_USER: conduit
+      CONDUIT_DB_PASSWORD: conduit
+      CONDUIT_DB_NAME: conduit
+      RAILS_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.2"
+          bundler-cache: true
+          working-directory: services/dashboard
+
+      # db/schema.rb (see the root README for why it has to be accurate)
+      # already includes transactions + city + flagged_transactions, so
+      # db:test:prepare is enough — no need to separately run the Go
+      # side's raw SQL migrations in this job.
+      - name: Prepare test database
+        run: bin/rails db:test:prepare
+
+      - name: Run tests
+        run: bin/rails test
+
   compose-smoke-test:
     runs-on: ubuntu-latest
     steps:

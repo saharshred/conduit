@@ -1,0 +1,58 @@
+<% if @metrics[:attack_total].positive? %>
+  <div class="mb-6 flex gap-6 rounded border border-slate-800 bg-slate-900/50 px-4 py-3 text-sm">
+    <div>
+      <span class="text-slate-500">Recall</span>
+      <span class="ml-2 font-mono text-emerald-400"><%= number_to_percentage(@metrics[:recall] * 100, precision: 1) %></span>
+      <span class="ml-1 text-slate-600 text-xs">(<%= @metrics[:attack_flagged] %>/<%= @metrics[:attack_total] %> injected attack txns caught)</span>
+    </div>
+    <div>
+      <span class="text-slate-500">Precision</span>
+      <span class="ml-2 font-mono text-emerald-400"><%= @metrics[:precision] ? number_to_percentage(@metrics[:precision] * 100, precision: 1) : "n/a" %></span>
+    </div>
+    <div>
+      <span class="text-slate-500">False positive rate</span>
+      <span class="ml-2 font-mono text-amber-400"><%= @metrics[:false_positive_rate] ? number_to_percentage(@metrics[:false_positive_rate] * 100, precision: 2) : "n/a" %></span>
+      <span class="ml-1 text-slate-600 text-xs">on legitimate traffic</span>
+    </div>
+  </div>
+<% else %>
+  <p class="mb-6 text-xs text-slate-600">Run <code>docker compose run --rm attack --account acct-demo --count 20</code> to see precision/recall against a labeled attack.</p>
+<% end %>
+
+<% if @flagged_transactions.empty? %>
+  <p class="text-slate-500 text-sm">No <%= @status_filter %> transactions. Run the attack script (<code>attack/attack.py</code>) or wait for the scorer's next pass.</p>
+<% else %>
+  <div class="overflow-x-auto rounded border border-slate-800">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-900 text-slate-400 text-xs uppercase tracking-wide">
+        <tr>
+          <th class="text-left px-4 py-2">Account</th>
+          <th class="text-right px-4 py-2">Amount</th>
+          <th class="text-left px-4 py-2">Category</th>
+          <th class="text-left px-4 py-2">Reasons</th>
+          <th class="text-left px-4 py-2">Occurred</th>
+          <% if @status_filter == "pending" %><th class="px-4 py-2"></th><% end %>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-800">
+        <% @flagged_transactions.each do |txn| %>
+          <tr class="hover:bg-slate-900/50">
+            <td class="px-4 py-2 font-mono text-xs">
+              <%= link_to txn.account_id, flagged_transaction_path(txn), class: "text-sky-400 hover:underline" %>
+            </td>
+            <td class="px-4 py-2 text-right tabular-nums">$<%= "%.2f" % txn.amount_dollars %></td>
+            <td class="px-4 py-2 text-slate-400"><%= txn.merchant_category %></td>
+            <td class="px-4 py-2 text-amber-400 text-xs"><%= txn.reason_list.join(" · ") %></td>
+            <td class="px-4 py-2 text-slate-500 text-xs"><%= txn.occurred_at.strftime("%b %-d, %H:%M:%S") %></td>
+            <% if @status_filter == "pending" %>
+              <td class="px-4 py-2 text-right whitespace-nowrap">
+                <%= button_to "Approve", approve_flagged_transaction_path(txn, status: @status_filter), class: "text-emerald-400 hover:underline text-xs mr-2" %>
+                <%= button_to "Deny", deny_flagged_transaction_path(txn, status: @status_filter), class: "text-red-400 hover:underline text-xs" %>
+              </td>
+            <% end %>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  </div>
+<% end %>

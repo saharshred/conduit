@@ -64,7 +64,16 @@ defmodule Scorer.Runner do
       end)
 
     flagged = Rules.score(transactions)
-    Enum.each(flagged, &upsert_flagged(pid, &1))
+    new_flags = Enum.count(flagged, &upsert_flagged(pid, &1))
+
+    # Only NOTIFY when something genuinely new was flagged this poll —
+    # re-upserting the same already-known flags (which happens every
+    # single poll, since scan_once re-scores everything from scratch)
+    # would otherwise trigger a pointless broadcast every 5s regardless
+    # of whether the dashboard has anything new to show.
+    if new_flags > 0 do
+      Postgrex.query!(pid, "NOTIFY conduit_flagged", [])
+    end
 
     {transactions, flagged}
   end
@@ -72,20 +81,27 @@ defmodule Scorer.Runner do
   # Upserts by idempotency_key — safe to re-run the scorer against the
   # same data (every poll, in loop mode) without duplicating rows or
   # clobbering a reviewer's approve/deny decision on a transaction
-  # that's already been looked at.
+  # that's already been looked at. Returns true if this was a genuinely
+  # new row (Postgres's `xmax = 0` trick: a freshly inserted row's xmax
+  # is always 0, an updated-via-ON-CONFLICT row's isn't), false if it
+  # was just a re-upsert of something already known.
   defp upsert_flagged(pid, txn) do
-    Postgrex.query!(
-      pid,
-      """
-      INSERT INTO flagged_transactions
-        (idempotency_key, account_id, amount_cents, merchant_category, reasons, occurred_at, status, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $6, 'pending', now(), now())
-      ON CONFLICT (idempotency_key) DO UPDATE
-        SET reasons = EXCLUDED.reasons, updated_at = now()
-      """,
-      [txn.idempotency_key, txn.account_id, txn.amount_cents, txn.merchant_category,
-       Enum.join(txn.flags, "\n"), DateTime.to_naive(txn.occurred_at)]
-    )
+    %Postgrex.Result{rows: [[inserted]]} =
+      Postgrex.query!(
+        pid,
+        """
+        INSERT INTO flagged_transactions
+          (idempotency_key, account_id, amount_cents, merchant_category, reasons, occurred_at, status, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, 'pending', now(), now())
+        ON CONFLICT (idempotency_key) DO UPDATE
+          SET reasons = EXCLUDED.reasons, updated_at = now()
+        RETURNING (xmax = 0) AS inserted
+        """,
+        [txn.idempotency_key, txn.account_id, txn.amount_cents, txn.merchant_category,
+         Enum.join(txn.flags, "\n"), DateTime.to_naive(txn.occurred_at)]
+      )
+
+    inserted
   end
 
   defp naive_to_utc(%NaiveDateTime{} = ndt), do: DateTime.from_naive!(ndt, "Etc/UTC")
@@ -94,8 +110,9 @@ defmodule Scorer.Runner do
   defp default_dsn, do: System.get_env("CONDUIT_DSN") || "postgres://conduit:conduit@localhost:5434/conduit"
 
   # Minimal DSN parser — good enough for postgres://user:pass@host:port/db,
-  # avoids pulling in a full URI-parsing dependency for one call site.
-  defp parse_dsn(dsn) do
+  # avoids pulling in a full URI-parsing dependency. Public because
+  # Scorer.Evaluate needs the same parsing to open its own connection.
+  def parse_dsn(dsn) do
     uri = URI.parse(dsn)
     [user, pass] = String.split(uri.userinfo || "conduit:conduit", ":", parts: 2)
 

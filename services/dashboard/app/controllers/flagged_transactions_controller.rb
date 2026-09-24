@@ -3,6 +3,7 @@ class FlaggedTransactionsController < ApplicationController
     @status_filter = FlaggedTransaction::STATUSES.include?(params[:status]) ? params[:status] : "pending"
     @flagged_transactions = FlaggedTransaction.where(status: @status_filter).recent_first
     @counts = FlaggedTransaction.group(:status).count
+    @metrics = DashboardMetrics.compute
   end
 
   def show

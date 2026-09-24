@@ -1,12 +1,11 @@
-<% content_for :head do %>
-  <%# Short polling, per the build plan — simplest thing that shows this
-      updating live without wiring up ActionCable/Turbo Streams for a v1. %>
-  <meta http-equiv="refresh" content="5">
-<% end %>
-
-<div class="flex items-center justify-between mb-6">
+<div class="flex items-center justify-between mb-4">
   <h1 class="text-xl font-semibold tracking-tight">Flagged transactions</h1>
-  <div class="flex gap-2 text-sm">
+  <div class="flex items-center gap-2 text-sm">
+    <% if @status_filter == "pending" %>
+      <span class="flex items-center gap-1.5 text-xs text-emerald-400" title="Live via Postgres LISTEN/NOTIFY + Turbo Streams — updates the instant the scorer flags something, no polling">
+        <span class="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span> live
+      </span>
+    <% end %>
     <% FlaggedTransaction::STATUSES.each do |status| %>
       <%= link_to status.capitalize, flagged_transactions_path(status: status),
             class: "px-3 py-1 rounded border #{status == @status_filter ? 'border-amber-500 text-amber-400' : 'border-slate-700 text-slate-400 hover:border-slate-500'}" %>
@@ -15,40 +14,12 @@
   </div>
 </div>
 
-<% if @flagged_transactions.empty? %>
-  <p class="text-slate-500 text-sm">No <%= @status_filter %> transactions. Run the attack script (<code>attack/attack.py</code>) or wait for the scorer's next pass.</p>
-<% else %>
-  <div class="overflow-x-auto rounded border border-slate-800">
-    <table class="w-full text-sm">
-      <thead class="bg-slate-900 text-slate-400 text-xs uppercase tracking-wide">
-        <tr>
-          <th class="text-left px-4 py-2">Account</th>
-          <th class="text-right px-4 py-2">Amount</th>
-          <th class="text-left px-4 py-2">Category</th>
-          <th class="text-left px-4 py-2">Reasons</th>
-          <th class="text-left px-4 py-2">Occurred</th>
-          <% if @status_filter == "pending" %><th class="px-4 py-2"></th><% end %>
-        </tr>
-      </thead>
-      <tbody class="divide-y divide-slate-800">
-        <% @flagged_transactions.each do |txn| %>
-          <tr class="hover:bg-slate-900/50">
-            <td class="px-4 py-2 font-mono text-xs">
-              <%= link_to txn.account_id, flagged_transaction_path(txn), class: "text-sky-400 hover:underline" %>
-            </td>
-            <td class="px-4 py-2 text-right tabular-nums">$<%= "%.2f" % txn.amount_dollars %></td>
-            <td class="px-4 py-2 text-slate-400"><%= txn.merchant_category %></td>
-            <td class="px-4 py-2 text-amber-400 text-xs"><%= txn.reason_list.join(" · ") %></td>
-            <td class="px-4 py-2 text-slate-500 text-xs"><%= txn.occurred_at.strftime("%b %-d, %H:%M:%S") %></td>
-            <% if @status_filter == "pending" %>
-              <td class="px-4 py-2 text-right whitespace-nowrap">
-                <%= button_to "Approve", approve_flagged_transaction_path(txn, status: @status_filter), class: "text-emerald-400 hover:underline text-xs mr-2" %>
-                <%= button_to "Deny", deny_flagged_transaction_path(txn, status: @status_filter), class: "text-red-400 hover:underline text-xs" %>
-              </td>
-            <% end %>
-          </tr>
-        <% end %>
-      </tbody>
-    </table>
-  </div>
+<%# Only the pending view gets pushed live updates — that's the one that
+    actually needs them; approved/denied are a reviewer's own history. %>
+<% if @status_filter == "pending" %>
+  <%= turbo_stream_from "flagged_transactions_pending" %>
 <% end %>
+
+<div id="flagged-live">
+  <%= render "live_content" %>
+</div>
