@@ -1,10 +1,22 @@
 # CONDUIT
 
-An aggregator that survives flaky banks and catches its own attacker.
+An aggregator that survives flaky banks and catches its own attacker —
+live, in one command.
 
 Multiple mock "bank" APIs, each with a different failure personality,
-normalized into one schema — feeding a real-time fraud scorer you then try
-to beat with your own adversarial traffic generator.
+normalized into one schema — feeding a real-time fraud scorer, showing up
+on a live dashboard, that you then try to beat with your own adversarial
+attack script. `docker compose up --build` brings up the entire system:
+Postgres, RabbitMQ, three mock banks, the ingestor, the normalizer, a
+continuously-polling Elixir scorer, and the Rails dashboard. No manual
+steps, no "now separately start the Elixir thing."
+
+![Live demo: an attack lands, the flagged count jumps, the new transactions show up at the top](docs/demo.gif)
+
+*(That's a real recording: `docker compose run --rm attack` fires a
+15-transaction burst, and within one scorer poll cycle the dashboard's
+pending count goes from 115 → 126 with no manual refresh, no re-running
+anything by hand.)*
 
 Signals for: **Plaid** (Go, multi-source normalization is literally their
 product problem) and **Ramp** (Elixir fraud scoring, RabbitMQ retry
@@ -43,12 +55,18 @@ app.
 - [x] **Real Rails 8 admin dashboard** (`services/dashboard`) — reads
       `flagged_transactions` directly out of the same `conduit` Postgres
       database the scorer writes into; approve/deny actions actually
-      persist. Getting here needed a newer Ruby than what ships on this
-      machine (system Ruby 2.6.10 can't install a modern Rails —
-      `zeitwerk` requires >=3.2); installed 3.2.4 via `rbenv` mid-session,
-      documented in `services/dashboard/README.md`. No automated test
-      suite yet — verified live against a real filled database instead
-      (see the transcript in that README)
+      persist. No automated test suite yet — verified live against a
+      real filled database instead (see `services/dashboard/README.md`)
+- [x] **Everything containerized, one command.** `services/scorer` now
+      runs as a long-lived polling loop (`Scorer.Runner.loop/1`, every
+      5s — matched to the dashboard's own poll interval) instead of a
+      one-shot script you had to remember to re-run, and both it and the
+      dashboard have their own Dockerfiles wired into the root
+      `docker-compose.yml`. `docker compose run --rm attack` runs the
+      Python attack script the same way, no local venv needed. The whole
+      loop — attack lands, scorer picks it up on its next poll, dashboard
+      reflects it on its next refresh — needs zero manual intervention,
+      proven by the GIF above.
 - [x] Geo-impossible-travel rule — added. Every mock bank transaction now
       carries a `city`; the rule flags two transactions on one account
       that are farther apart than physically possible to travel between
@@ -139,41 +157,73 @@ restart policy, so the container just died. Fixed with
 the failure mode that's actually going to happen" instinct the rest of
 this project is built on, just applied to itself.
 
+**The hardest bug of all: Rails silently dropping a column it doesn't
+own.** Containerizing the dashboard meant it had to boot against a truly
+fresh database for the first time — and on every fresh boot, the `city`
+column the Go migration adds would just... not be there, breaking the
+scorer's geo rule. `git blame`-style debugging on my own migration script
+wasn't enough this time; I isolated it by bringing up only `postgres` +
+`migrate` (column persisted fine), then adding `dashboard` alone (column
+vanished within about a second of it starting). Tight polling correlated
+against timestamped container logs down to the millisecond pinned the
+disappearance to `bin/rails db:migrate`'s own execution window — despite
+`db:migrate` supposedly only applying this app's own pending migration
+file. The actual mechanism: Rails 8's multi-database task runner, on a
+database whose `schema_migrations` table is still empty, treats that as
+"this database needs preparing" and loads `db/schema.rb` — which had been
+committed *before* the Go side's city-column migration existed, so it
+`force: :cascade`-recreated `transactions` from a stale snapshot and
+silently destroyed the column a completely separate migration step had
+just added, seconds earlier. Fixed at the actual root cause — regenerated
+`schema.rb` from a database that has the column, so it's accurate — plus
+made the Go-side migration step in `migrations/apply.sh` retry and
+self-verify (`SELECT` the column back out of `information_schema` before
+declaring success) rather than trusting a command's exit code alone.
+Worth knowing this pattern exists: two systems that both think they own
+schema for the same physical database is a real, repeatable failure mode,
+not a one-off fluke — the fix isn't "don't let it happen," it's "verify,
+don't assume."
+
 ## Running it yourself
 
-**One command** for the whole Go pipeline — Postgres, RabbitMQ, schema
-migration, mock bank dataset generation, the three mock banks, the
-ingestor (retry/dead-letter active), and the normalizer feeding
-everything through:
+**One command, the entire system:**
 
 ```sh
 docker compose up --build
-# watch queue depths at http://localhost:15673 (guest/guest)
+# → http://localhost:3001 for the live dashboard
+# → http://localhost:15673 (guest/guest) to watch queue depths
 ```
 
-This is verified working, start to finish, not just written — see CI.
-`services/scorer` and `services/dashboard` run separately (different
-language runtimes — see below) against this stack's exposed Postgres.
+That brings up Postgres, RabbitMQ, schema migrations, mock bank dataset
+generation, the three mock banks, the ingestor (retry/dead-letter
+active), the normalizer feeding everything through, a continuously
+polling Elixir scorer, and the Rails dashboard. Verified working, start
+to finish, in CI on every push — not just written and hoped for.
+
+Attack it:
 
 ```sh
-# score what landed (needs Elixir/mix — services/scorer/README.md)
-cd services/scorer && mix deps.get && mix test
-mix run -e 'Scorer.Runner.run(dsn: "postgres://conduit:conduit@localhost:5434/conduit")'
-
-# dashboard — reads flagged_transactions from the same conduit database
-# (needs Ruby 3.2+/Rails — services/dashboard/README.md)
-cd ../dashboard && bin/rails db:migrate && bin/rails server -p 3001
-# http://localhost:3001
-
-# attack it
-cd ../../attack && python3 -m venv venv && ./venv/bin/pip install pika
-./venv/bin/python attack.py --account acct-attack-1 --count 20
-# re-run the scorer, then refresh the dashboard (or wait 5s — it polls)
+docker compose run --rm attack --account acct-demo --count 20
+# refresh the dashboard within ~10s and watch it light up — no other
+# command needed, the scorer and dashboard are already running and polling
 ```
 
-For local Go dev without rebuilding a container on every change, swap
-`docker compose up --build` for `docker compose up postgres rabbitmq -d`
-and run the Go binaries directly — see `cmd/*/main.go` flags.
+For local dev without rebuilding a container on every change:
+
+```sh
+docker compose up postgres rabbitmq -d
+go run ./cmd/mockbanks data/ &     # after go run ./scripts/gen-dataset ...
+go run ./cmd/ingestor -postgres=postgres://conduit:conduit@localhost:5434/conduit?sslmode=disable &
+go run ./cmd/normalizer
+
+cd services/scorer && mix deps.get && mix test
+mix run -e 'Scorer.Runner.loop(dsn: "postgres://conduit:conduit@localhost:5434/conduit")'
+
+cd ../dashboard && bin/rails db:migrate && bin/rails server -p 3001
+
+cd ../../attack && python3 -m venv venv && ./venv/bin/pip install pika
+./venv/bin/python attack.py --account acct-attack-1 --count 20
+```
 
 Unit tests (no infra required):
 `go test ./internal/ingest/... ./internal/normalize/...`
@@ -200,11 +250,12 @@ Mock Bank C (odd pagination) --/    (unified schema, idempotency keys)
                                     Postgres
                                          |
                                          v
-                          Elixir Scorer (velocity / mcc_drift / geo_impossible)
+              Elixir Scorer (velocity/mcc_drift/geo_impossible, polls every 5s)
                                          |
                                          v
-                          Rails Admin Dashboard (approve/deny, 5s poll)
+              Rails Dashboard (approve/deny, polls every 5s — localhost:3001)
 
-Adversarial Attack Script (attack/attack.py)
+Adversarial Attack Script (docker compose run --rm attack)
         -.publishes directly to RabbitMQ.-> same pipeline as real banks
+        -.caught within one scorer poll cycle, no manual steps.->
 ```

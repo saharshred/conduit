@@ -1,6 +1,6 @@
 /data/
 *.json
-bin/
+/bin/
 *.test
 .DS_Store
 

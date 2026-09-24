@@ -1,0 +1,19 @@
+# Development-mode image for the docker-compose demo — the Rails
+# generator's own Dockerfile targets production (needs RAILS_MASTER_KEY,
+# which is deliberately not committed). This one just needs Postgres
+# reachable and runs migrations + Tailwind build + the dev server on
+# start, so `docker compose up` works on a fresh clone with zero setup.
+FROM ruby:3.2-slim
+
+RUN apt-get update -qq && apt-get install --no-install-recommends -y \
+    build-essential libpq-dev libyaml-dev pkg-config curl postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /rails
+COPY Gemfile Gemfile.lock ./
+RUN bundle install
+
+COPY . .
+
+EXPOSE 3001
+ENTRYPOINT ["bin/docker-entrypoint-dev"]

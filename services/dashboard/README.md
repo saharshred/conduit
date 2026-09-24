@@ -6,9 +6,12 @@ A real Rails 8 app — not a stub. Shows flagged transactions as
 (see `config/database.yml` — deliberately not a separate
 `dashboard_development` database).
 
-Getting this running needed a newer Ruby than what ships on this machine:
-system Ruby was 2.6.10, and Rails' own `zeitwerk` dependency dropped
-support below Ruby 3.2. Fixed with:
+Runs in Docker now (`Dockerfile.dev`, wired into the root
+`docker-compose.yml`) — `docker compose up --build` from the repo root is
+the actual way to run this, no local Ruby needed. Getting a *local* Ruby
+working (for `bin/rails console` etc.) needs 3.2+: system Ruby on the
+machine this was built on was 2.6.10, and Rails' own `zeitwerk`
+dependency dropped support below 3.2.
 
 ```sh
 brew install rbenv ruby-build
@@ -33,24 +36,45 @@ gem install rails
 
 ## Running it
 
+From the repo root: `docker compose up --build` — brings this up along
+with everything else. Standalone, against an already-running Postgres:
+
 ```sh
 cd services/dashboard
 bin/rails db:migrate     # only needs to run once against the shared conduit DB
 bin/rails server -p 3001
 ```
 
-Then run the scorer (`../scorer`) to populate `flagged_transactions`, and
-`../../attack/attack.py` to watch new flagged rows show up within one
-polling interval.
+The scorer (`../scorer`) runs continuously and populates
+`flagged_transactions` on its own now; `../../attack/attack.py` (or
+`docker compose run --rm attack`) shows new flagged rows up within one
+scorer poll cycle, no manual re-run of anything.
+
+## A real bug: `db:migrate` silently dropping a column it doesn't own
+
+Containerizing this surfaced something local testing never would have:
+on a truly fresh database, `bin/rails db:migrate` — not just
+`db:prepare`, which is documented to fall back to a full schema load —
+also force-reloaded `db/schema.rb` because `schema_migrations` was still
+empty. `schema.rb` had been committed *before* the Go side's `city`
+column migration existed, so the reload `force: :cascade`-recreated
+`transactions` from that stale snapshot and silently destroyed a column
+a completely separate migration had added seconds earlier. Found by
+isolating services one at a time in compose (`postgres` + `migrate`
+alone: column persisted; adding `dashboard`: column vanished within ~1s
+of it starting) and correlating timestamped container logs down to the
+millisecond. Fixed by regenerating `schema.rb` from a database that
+actually has the column — full writeup in the root README.
 
 ## Verified
 
 No automated test suite yet (`rails new` was run with `--skip-test`
 while getting the Ruby toolchain sorted, and it wasn't added back). What
-*is* verified, against a live server on a real filled database:
+*is* verified, against a live server on a real filled database, repeated
+after full teardown to confirm it's not a fluke:
 
 ```
-GET  /                                   → 200, renders all 60 real flagged rows
+GET  /                                   → 200, renders all pending flagged rows
 POST /flagged_transactions/1/approve     → 302, status actually persisted to "approved"
 ```
 

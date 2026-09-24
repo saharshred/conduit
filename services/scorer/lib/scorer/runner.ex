@@ -3,19 +3,47 @@ defmodule Scorer.Runner do
   Connects to the same Postgres database the Go ingestor writes into,
   loads every transaction, runs `Scorer.Rules` against it grouped by
   account, and upserts what got flagged into `flagged_transactions` — the
-  table services/dashboard (Rails) reads from. Batch mode for now; wiring
-  this to consume the RabbitMQ stream directly instead of reading what's
-  already landed is the natural next step.
+  table services/dashboard (Rails) reads from.
+
+  `run/1` does one pass and returns (used by tests, and by a human running
+  it once from a shell). `loop/1` is what actually runs in the container —
+  polls on an interval so the dashboard reflects new transactions and new
+  attacks without anyone manually re-invoking the scorer. Re-scoring the
+  same data repeatedly is safe: `upsert_flagged` only touches `reasons`
+  on conflict, never `status`, so a reviewer's approve/deny decision on
+  an already-seen transaction is never clobbered by the next poll.
   """
 
   alias Scorer.{Rules, Transaction}
 
   def run(opts \\ []) do
     dsn = Keyword.get(opts, :dsn, default_dsn())
-    config = parse_dsn(dsn)
+    {:ok, pid} = Postgrex.start_link(parse_dsn(dsn))
+    scan_once(pid)
+  end
 
-    {:ok, pid} = Postgrex.start_link(config)
+  @doc """
+  Runs forever, re-scoring all transactions every `interval_ms` (default
+  5s — matched to the dashboard's own 5s poll, so a fresh flag is visible
+  within one dashboard refresh of an attack landing).
+  """
+  def loop(opts \\ []) do
+    interval_ms = Keyword.get(opts, :interval_ms, 5_000)
+    dsn = Keyword.get(opts, :dsn, default_dsn())
+    {:ok, pid} = Postgrex.start_link(parse_dsn(dsn))
 
+    IO.puts("scorer: polling every #{interval_ms}ms\n")
+    loop_forever(pid, interval_ms)
+  end
+
+  defp loop_forever(pid, interval_ms) do
+    {transactions, flagged} = scan_once(pid)
+    IO.puts("[#{DateTime.utc_now() |> DateTime.to_iso8601()}] scored #{length(transactions)}, #{length(flagged)} flagged")
+    Process.sleep(interval_ms)
+    loop_forever(pid, interval_ms)
+  end
+
+  defp scan_once(pid) do
     %Postgrex.Result{rows: rows} =
       Postgrex.query!(
         pid,
@@ -36,21 +64,15 @@ defmodule Scorer.Runner do
       end)
 
     flagged = Rules.score(transactions)
-
-    IO.puts("scored #{length(transactions)} transactions, #{length(flagged)} flagged\n")
-
-    Enum.each(flagged, fn txn ->
-      IO.puts("FLAGGED #{txn.idempotency_key} (#{txn.account_id}): #{Enum.join(txn.flags, ", ")}")
-      upsert_flagged(pid, txn)
-    end)
+    Enum.each(flagged, &upsert_flagged(pid, &1))
 
     {transactions, flagged}
   end
 
   # Upserts by idempotency_key — safe to re-run the scorer against the
-  # same data (e.g. on a schedule) without duplicating rows or clobbering
-  # a reviewer's approve/deny decision on a transaction that's already
-  # been looked at.
+  # same data (every poll, in loop mode) without duplicating rows or
+  # clobbering a reviewer's approve/deny decision on a transaction
+  # that's already been looked at.
   defp upsert_flagged(pid, txn) do
     Postgrex.query!(
       pid,

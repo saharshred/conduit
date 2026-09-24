@@ -95,4 +95,16 @@ jobs:
             done
           ' || { echo "::error::timed out waiting for transactions to land"; docker compose logs; docker compose down -v; exit 1; }
           docker compose exec -T postgres psql -U conduit -d conduit -c "SELECT count(*), count(city) FROM transactions;"
+
+          echo "waiting for the scorer to flag something..."
+          timeout 120 bash -c '
+            until [ "$(docker compose exec -T postgres psql -U conduit -d conduit -tAc "SELECT count(*) FROM flagged_transactions" 2>/dev/null || echo 0)" -gt "0" ]; do
+              sleep 5
+            done
+          ' || { echo "::error::scorer never flagged anything"; docker compose logs scorer; docker compose down -v; exit 1; }
+
+          echo "checking the dashboard actually serves the flagged transactions..."
+          curl -sf http://localhost:3001/ | grep -q "Flagged transactions" \
+            || { echo "::error::dashboard did not render as expected"; docker compose logs dashboard; docker compose down -v; exit 1; }
+
           docker compose down -v

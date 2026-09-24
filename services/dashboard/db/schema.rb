@@ -32,6 +32,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_27_192336) do
     t.text "account_id", null: false
     t.bigint "amount_cents", null: false
     t.text "bank", null: false
+    t.text "city"
     t.text "currency", null: false
     t.text "idempotency_key", null: false
     t.timestamptz "ingested_at", default: -> { "now()" }, null: false

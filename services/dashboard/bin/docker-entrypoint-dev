@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Entrypoint for the dev-mode container: wait for Postgres, migrate
+# (idempotent — safe on every restart), build Tailwind once, then serve.
+#
+# Deliberately `db:migrate`, not `db:prepare`: on a database with no
+# schema_migrations table yet (true on first boot, since the Go
+# `migrate` service creates `transactions` via raw SQL outside Rails'
+# tracking), `db:prepare` falls back to `db:schema:load`, which loads
+# db/schema.rb with `force: :cascade` — i.e. drops and recreates
+# `transactions` from whatever schema.rb last had committed, silently
+# destroying columns (like `city`) that the Go side owns and this app
+# doesn't track. `db:migrate` only ever applies this app's own pending
+# migration files (just flagged_transactions) and never touches a table
+# it didn't create.
+set -euo pipefail
+
+echo "waiting for postgres..."
+until pg_isready -h "${CONDUIT_DB_HOST:-postgres}" -p "${CONDUIT_DB_PORT:-5432}" -U "${CONDUIT_DB_USER:-conduit}" >/dev/null 2>&1; do
+  sleep 1
+done
+
+bin/rails db:migrate
+bin/rails tailwindcss:build
+exec bin/rails server -b 0.0.0.0 -p 3001

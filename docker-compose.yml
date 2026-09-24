@@ -1,17 +1,15 @@
 
-# One command for the Go half of the pipeline: `docker compose up --build`.
+# One command, the whole system: `docker compose up --build`.
 # Brings up Postgres/RabbitMQ, migrates the schema, generates a mock
 # 6-week dataset, starts the three mock banks + the ingestor (which
 # deliberately fails ~8% of deliveries to exercise the retry/dead-letter
-# path — see internal/queue), then runs the normalizer to feed everything
-# in. Watch queue depths at http://localhost:15673 (guest/guest).
+# path — see internal/queue), runs the normalizer to feed everything in,
+# then starts the Elixir scorer (polling every 5s, forever) and the Rails
+# dashboard. Open http://localhost:3001 for the live dashboard, and
+# http://localhost:15673 (guest/guest) to watch queue depths.
 #
-# services/scorer (Elixir) and services/dashboard (Rails) are run
-# separately — see their own READMEs. Containerizing two more language
-# runtimes with native-dependency bundlers (pg gem, etc.) for services
-# that are meant to be run once against already-durable Postgres data
-# wasn't worth the added fragility; `mix run` / `rails server` against
-# this compose stack's exposed Postgres port is one command each.
+# To attack it: `docker compose run --rm attack --account acct-demo --count 20`
+# then refresh the dashboard within ~10s and watch it light up.
 services:
   postgres:
     image: postgres:16-alpine
@@ -48,10 +46,7 @@ services:
         condition: service_healthy
     volumes:
       - ./migrations:/migrations:ro
-    entrypoint:
-      - sh
-      - -c
-      - "psql postgres://conduit:conduit@postgres:5432/conduit?sslmode=disable -f /migrations/0001_ingest.sql -f /migrations/0002_add_city.sql"
+    entrypoint: ["sh", "/migrations/apply.sh"]
 
   # One-shot: writes a 6-week synthetic dataset per mock bank, then exits.
   gen-dataset:
@@ -102,6 +97,37 @@ services:
         condition: service_started
       ingestor:
         condition: service_started
+
+  scorer:
+    build: { context: services/scorer, dockerfile: Dockerfile }
+    environment:
+      CONDUIT_DSN: postgres://conduit:conduit@postgres:5432/conduit
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  dashboard:
+    build: { context: services/dashboard, dockerfile: Dockerfile.dev }
+    environment:
+      CONDUIT_DB_HOST: postgres
+      CONDUIT_DB_PORT: "5432"
+      CONDUIT_DB_USER: conduit
+      CONDUIT_DB_PASSWORD: conduit
+      CONDUIT_DB_NAME: conduit
+    ports:
+      - "3001:3001"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Run on demand: `docker compose run --rm attack --account acct-demo --count 20`
+  attack:
+    build: { context: attack, dockerfile: Dockerfile }
+    entrypoint: ["python", "attack.py", "--amqp-url=amqp://guest:guest@rabbitmq:5672/"]
+    profiles: ["tools"]
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
 
 volumes:
   pgdata:
