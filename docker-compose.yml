@@ -129,6 +129,24 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  # Second-stage classifier on top of the rule engine: trains once at
+  # startup against real ground truth (attack/attack.py's own labels,
+  # same trick services/scorer/lib/scorer/evaluate.ex uses), then loops
+  # scoring newly rule-flagged transactions. Waits on the normalizer to
+  # finish feeding transactions in so it has real history to train on.
+  ml-scorer:
+    build: { context: services/ml_scorer, dockerfile: Dockerfile }
+    environment:
+      CONDUIT_DSN: postgres://conduit:conduit@postgres:5432/conduit
+    volumes:
+      - ml-model:/model
+    depends_on:
+      normalizer:
+        condition: service_completed_successfully
+      scorer:
+        condition: service_started
+
 volumes:
   pgdata:
   dataset:
+  ml-model:

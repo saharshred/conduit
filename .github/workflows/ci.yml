@@ -122,6 +122,21 @@ jobs:
       - name: Run tests
         run: bin/rails test
 
+  ml-scorer:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/ml_scorer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+      - run: pytest -v
+
   compose-smoke-test:
     runs-on: ubuntu-latest
     steps:
@@ -150,6 +165,13 @@ jobs:
               sleep 5
             done
           ' || { echo "::error::scorer never flagged anything"; docker compose logs scorer; docker compose down -v; exit 1; }
+
+          echo "waiting for ml-scorer to train and score at least one flagged transaction..."
+          timeout 180 bash -c '
+            until [ "$(docker compose exec -T postgres psql -U conduit -d conduit -tAc "SELECT count(*) FROM flagged_transactions WHERE ml_score IS NOT NULL" 2>/dev/null || echo 0)" -gt "0" ]; do
+              sleep 5
+            done
+          ' || { echo "::error::ml-scorer never wrote a score"; docker compose logs ml-scorer; docker compose down -v; exit 1; }
 
           echo "checking the dashboard actually serves the flagged transactions..."
           curl -sf http://localhost:3001/ | grep -q "Flagged transactions" \

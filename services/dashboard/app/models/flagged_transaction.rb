@@ -15,4 +15,8 @@ class FlaggedTransaction < ApplicationRecord
   def amount_dollars
     amount_cents / 100.0
   end
+
+  def ml_score_percent
+    ml_score.nil? ? nil : (ml_score * 100).round(1)
+  end
 end

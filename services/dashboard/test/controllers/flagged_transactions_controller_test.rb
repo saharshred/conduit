@@ -46,6 +46,19 @@ class FlaggedTransactionsControllerTest < ActionDispatch::IntegrationTest
     assert_match "velocity: 5 transactions within 120s", response.body
   end
 
+  test "index shows 'scoring…' for a transaction ml_scorer hasn't scored yet" do
+    get flagged_transactions_url
+    assert_response :success
+    assert_match "scoring…", response.body
+  end
+
+  test "index shows the ml risk percentage once ml_scorer has written a score" do
+    @pending.update!(ml_score: 0.87)
+    get flagged_transactions_url
+    assert_response :success
+    assert_match "87.0%", response.body
+  end
+
   test "approve actually persists the status change" do
     post approve_flagged_transaction_url(@pending)
     assert_redirected_to flagged_transactions_url

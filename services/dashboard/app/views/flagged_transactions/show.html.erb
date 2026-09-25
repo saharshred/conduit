@@ -26,6 +26,15 @@
       <% end %>
     </ul>
   </dd>
+
+  <dt class="text-slate-500">ML risk score</dt>
+  <dd>
+    <% if @flagged_transaction.ml_score_percent.nil? %>
+      <span class="text-slate-600">not scored yet</span>
+    <% else %>
+      <%= @flagged_transaction.ml_score_percent %>% — second-stage classifier's estimated probability this is the injected attack, given the same signals the rules use plus amount/time-of-day
+    <% end %>
+  </dd>
 </dl>
 
 <% if @flagged_transaction.status == "pending" %>

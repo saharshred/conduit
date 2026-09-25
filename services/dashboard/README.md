@@ -23,8 +23,10 @@ gem install rails
 ## What's here
 
 - `FlaggedTransaction` (`app/models`) — one row per transaction the
-  scorer flagged, with the rule(s) that fired and a `status` that starts
-  at `pending` and moves to `approved`/`denied`
+  scorer flagged, with the rule(s) that fired, an `ml_score` written by
+  `services/ml_scorer` (nullable — null until that service scores it,
+  shown as "scoring…"), and a `status` that starts at `pending` and moves
+  to `approved`/`denied`
 - `FlaggedTransactionsController` — index (filterable by status), show,
   and `approve`/`deny` member actions that actually persist
 - `DashboardMetrics` (`app/models`) — precision/recall/false-positive-rate

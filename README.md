@@ -84,10 +84,11 @@ app.
       pipeline — Postgres, RabbitMQ, migrations, dataset generation,
       mock banks, ingestor, normalizer, all in one command. Verified
       locally and in CI, not just written and hoped for.
-- [x] **CI** (`.github/workflows/ci.yml`) — separate Go, Elixir, and Rails
-      jobs (go vet, unit tests, race detector, Postgres integration
-      tests, `mix test`, `bin/rails test`), plus a full compose smoke
-      test that now checks the scorer and dashboard too, all on every push
+- [x] **CI** (`.github/workflows/ci.yml`) — separate Go, Elixir, Rails, and
+      ml_scorer jobs (go vet, unit tests, race detector, Postgres
+      integration tests, `mix test`, `bin/rails test`, `pytest`), plus a
+      full compose smoke test that now checks the scorer, ML classifier,
+      and dashboard too, all on every push
 - [x] **Real precision/recall, not a raw flag count.**
       `services/scorer/lib/scorer/evaluate.ex` and the Rails
       `DashboardMetrics` model both compute it independently, off the
@@ -102,11 +103,22 @@ app.
       broadcasts a fresh render over Turbo Streams. An attack shows up on
       the dashboard instantly, no 5-second wait, verified by watching the
       page update itself with zero manual refresh (see the screenshot above)
-- [x] **A real Rails test suite** (`services/dashboard/test/`) — 8
+- [x] **A real Rails test suite** (`services/dashboard/test/`) — 10
       passing tests: index rendering, status filtering, an unrecognized
       status param falling back safely, approve/deny actually persisting,
-      and the metrics arithmetic against seeded ground-truth data. Closes
-      the one gap this README used to call out explicitly.
+      ML score rendering, and the metrics arithmetic against seeded
+      ground-truth data. Closes the one gap this README used to call out
+      explicitly.
+- [x] **A real second-stage ML classifier** (`services/ml_scorer`) — the
+      rule engine is binary (fired or didn't); this layer learns from the
+      same ground-truth labels to produce a continuous risk score instead.
+      A `GradientBoostingClassifier` (scikit-learn) trains on real
+      transaction history — amount, time-of-day, velocity, category drift,
+      geo-implied speed, and how many rules fired — evaluated on a
+      chronological (not random) held-out split so it's never trained on
+      data from "the future." Runs continuously in its own container,
+      writing a risk score back onto every rule-flagged transaction for
+      the dashboard to show (`ML risk` column). 9 passing pytest tests.
 
 ## Why it's built this way
 
@@ -225,15 +237,18 @@ docker compose up --build
 That brings up Postgres, RabbitMQ, schema migrations, mock bank dataset
 generation, the three mock banks, the ingestor (retry/dead-letter
 active), the normalizer feeding everything through, a continuously
-polling Elixir scorer, and the Rails dashboard. Verified working, start
-to finish, in CI on every push — not just written and hoped for.
+polling Elixir scorer, the ML classifier (trains once it has real
+attack traffic, then scores continuously), and the Rails dashboard.
+Verified working, start to finish, in CI on every push — not just
+written and hoped for.
 
 Attack it:
 
 ```sh
 docker compose run --rm attack --account acct-demo --count 20
-# refresh the dashboard within ~10s and watch it light up — no other
-# command needed, the scorer and dashboard are already running and polling
+# pushed to the dashboard instantly (LISTEN/NOTIFY + Turbo Streams, no
+# manual refresh) — the ml-scorer container picks up the new ground
+# truth on its next pass and starts scoring the burst within seconds
 ```
 
 For local dev without rebuilding a container on every change:
@@ -261,6 +276,9 @@ Elixir: `cd services/scorer && mix test` (21 tests, no infra required —
 `evaluate_test.exs` tests the precision/recall arithmetic as pure functions)
 Rails (needs Postgres — `docker compose up postgres -d`):
 `cd services/dashboard && RAILS_ENV=test bin/rails db:test:prepare && bin/rails test`
+ML classifier (no infra required — feature engineering and the train/
+eval split are pure functions of a DataFrame):
+`cd services/ml_scorer && pip install -r requirements.txt && pytest -v`
 
 ## Architecture
 
@@ -283,6 +301,9 @@ Mock Bank C (odd pagination) --/    (unified schema, idempotency keys)
                                          |
                                          v
               Elixir Scorer (velocity/mcc_drift/geo_impossible, polls every 5s)
+                                         |
+                                         v
+              Python ML Scorer (GradientBoostingClassifier, re-ranks rule flags)
                                          |
                                          v
               Rails Dashboard (approve/deny, live via LISTEN/NOTIFY — localhost:3001)

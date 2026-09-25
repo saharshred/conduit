@@ -30,6 +30,7 @@
           <th class="text-right px-4 py-2">Amount</th>
           <th class="text-left px-4 py-2">Category</th>
           <th class="text-left px-4 py-2">Reasons</th>
+          <th class="text-right px-4 py-2">ML risk</th>
           <th class="text-left px-4 py-2">Occurred</th>
           <% if @status_filter == "pending" %><th class="px-4 py-2"></th><% end %>
         </tr>
@@ -43,6 +44,15 @@
             <td class="px-4 py-2 text-right tabular-nums">$<%= "%.2f" % txn.amount_dollars %></td>
             <td class="px-4 py-2 text-slate-400"><%= txn.merchant_category %></td>
             <td class="px-4 py-2 text-amber-400 text-xs"><%= txn.reason_list.join(" · ") %></td>
+            <td class="px-4 py-2 text-right tabular-nums text-xs">
+              <% if txn.ml_score_percent.nil? %>
+                <span class="text-slate-600">scoring…</span>
+              <% else %>
+                <span class="<%= txn.ml_score_percent >= 70 ? "text-red-400" : txn.ml_score_percent >= 30 ? "text-amber-400" : "text-slate-500" %>">
+                  <%= txn.ml_score_percent %>%
+                </span>
+              <% end %>
+            </td>
             <td class="px-4 py-2 text-slate-500 text-xs"><%= txn.occurred_at.strftime("%b %-d, %H:%M:%S") %></td>
             <% if @status_filter == "pending" %>
               <td class="px-4 py-2 text-right whitespace-nowrap">
