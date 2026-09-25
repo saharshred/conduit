@@ -166,6 +166,9 @@ jobs:
             done
           ' || { echo "::error::scorer never flagged anything"; docker compose logs scorer; docker compose down -v; exit 1; }
 
+          echo "firing a labeled attack burst so ml-scorer has ground truth to train on..."
+          docker compose run --rm attack --account acct-smoke-test --count 20 --interval 0.1
+
           echo "waiting for ml-scorer to train and score at least one flagged transaction..."
           timeout 180 bash -c '
             until [ "$(docker compose exec -T postgres psql -U conduit -d conduit -tAc "SELECT count(*) FROM flagged_transactions WHERE ml_score IS NOT NULL" 2>/dev/null || echo 0)" -gt "0" ]; do
