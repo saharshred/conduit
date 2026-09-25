@@ -1,7 +1,7 @@
 # Scorer
 
-The fraud rules engine — Elixir, chosen because it's what Ramp's actual
-real-time card-authorization stack runs on. Not a batch job you have to
+The fraud rules engine — Elixir, chosen because it's a common real-time
+card-authorization stack choice in fintech. Not a batch job you have to
 remember to re-run anymore: `Scorer.Runner.loop/1` polls every 5 seconds,
 forever. When it finds something genuinely new (not just re-confirming an
 already-known flag — see the `xmax = 0` trick in `runner.ex`), it

@@ -26,10 +26,6 @@ anything by hand.)*
 polling delay — with a real precision/recall breakdown against the
 attack script's own ground-truth labels.)*
 
-Signals for: **Plaid** (Go, multi-source normalization is literally their
-product problem) and **Ramp** (Elixir fraud scoring, RabbitMQ retry
-pattern) directly; **Ruby/Rails** for Coinbase and Stripe.
-
 ## Status
 
 All of Days 1-6 done and verified against real infrastructure (Docker
@@ -133,10 +129,11 @@ transient failures that self-healed, 2 poisoned messages that ended up on
 the dead-letter queue, 6,298 landed in Postgres — `6300 - 2 = 6298`,
 exactly.
 
-**Elixir chosen for the same reason as the plan says.** Ramp's real-time
-card-authorization stack runs on Elixir; `services/scorer` mirrors that
-shape — a stream of transactions, cheap rule checks, a decision made per
-transaction. It reads from Postgres in batch for now (Day 4 scope); wiring
+**Elixir chosen for the same reason as the plan says.** Real-time
+card-authorization stacks at fintechs commonly run on Elixir;
+`services/scorer` mirrors that shape — a stream of transactions, cheap
+rule checks, a decision made per transaction. It reads from Postgres in
+batch for now (Day 4 scope); wiring
 it to consume the RabbitMQ stream directly is the natural next step once
 there's a dashboard to show results in live.
 
